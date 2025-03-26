@@ -1,7 +1,6 @@
 import streamlit as st
 import pandas as pd
 import pdfrw  # For reading/writing PDF form fields
-from openai import OpenAI
 import json
 import io
 import os
