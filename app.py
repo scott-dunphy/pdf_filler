@@ -108,16 +108,16 @@ def match_fields_with_ai(pdf_field_names, excel_field_names):
     )
 
     # Format messages for Mistral API
- messages = [
-     {
-            "role": "system",
-            "content": "You are an expert at comparing text input field names.",
-        },
-        {
-            "role": "user",
-            "content": f"{prompt}",
-        },
-    ]
+    messages = [
+         {
+                "role": "system",
+                "content": "You are an expert at comparing text input field names.",
+            },
+            {
+                "role": "user",
+                "content": f"{prompt}",
+            },
+        ]
 
     try:
         st.info(f"Asking {MODEL_NAME} to match fields...") # Updated info message
