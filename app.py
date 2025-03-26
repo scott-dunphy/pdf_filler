@@ -8,6 +8,7 @@ import os
 from mistralai import Mistral
 import tempfile # To handle uploaded files safely
 
+
 # --- Configuration ---
 MODEL_NAME = "pixtral-12b-latest"
 DEFAULT_PROMPT_TEMPLATE = """
@@ -176,7 +177,8 @@ def fill_pdf(pdf_bytes_io, field_mapping, excel_data, pdf_fields_objects):
 
                 # Update the field value (/V) and potentially appearance (/AP)
                 # Using PdfString ensures correct PDF encoding
-                field_obj.update(pdfrw.PdfDict(V=pdfrw.PdfString(f'({value_to_fill})')))
+                from pdfrw.objects import pdfstring
+                field_obj.update(pdfrw.PdfDict(V=pdfstring.PdfString.encode(value_to_fill)))
                 # Optionally clear the appearance stream (/AP) so the viewer regenerates it
                 field_obj.update(pdfrw.PdfDict(AP=''))
                 filled_count += 1
