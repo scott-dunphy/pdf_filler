@@ -1,178 +1,272 @@
 import streamlit as st
 import pandas as pd
-import PyPDF2
-import openai
+import pdfrw # For reading/writing PDF form fields
+from openai import OpenAI
+import json
+import io
 import os
+import tempfile # To handle uploaded files safely
 
-# --------------------------------------------------------------------------
-# 1) Configure your OpenAI API key
-# --------------------------------------------------------------------------
-# Option 1: You have OPENAI_API_KEY in your environment
-# openai.api_key = os.getenv("OPENAI_API_KEY")
+# --- Configuration ---
+MODEL_NAME = "gpt-4o-mini"
+DEFAULT_PROMPT_TEMPLATE = """
+You are an AI assistant tasked with matching field names from an Excel sheet to field names in a fillable PDF form.
+The goal is to determine which Excel field likely corresponds to which PDF field, even if the names aren't exact matches (e.g., "Company Name" vs "Business Name").
 
-# Option 2: Use Streamlit secrets (uncomment if you're storing the key in streamlit secrets)
-# openai.api_key = st.secrets["openai_api_key"]
+Here are the available PDF field names:
+{pdf_fields_list}
 
-# --------------------------------------------------------------------------
-# 2) OpenAI LLM Matching
-# --------------------------------------------------------------------------
-def openai_match_field(pdf_field: str, excel_columns: list, model_name: str = "gpt-4o-mini") -> str:
-    """
-    Uses OpenAI ChatCompletion to determine which Excel column best matches a given PDF field.
-    pdf_field: The name of the PDF form field (e.g., "Company Name")
-    excel_columns: List of column names in the Excel (e.g., ["Business Name", "Address", "Contact Person"])
-    model_name: The OpenAI model to use (defaults to GPT-3.5-turbo)
-    Returns the single best matching column name, or "" if none is confidently matched.
-    """
+Here are the available Excel field names (these have corresponding values):
+{excel_fields_list}
 
-    # Build a concise conversation to guide the model.
-    # We provide a system message describing its role and constraints.
-    # Then a user message that includes the PDF field and the possible Excel columns.
-    system_message = {
-        "role": "system",
-        "content": (
-            "You are a helpful assistant specialized in matching a PDF form field name "
-            "to the best Excel column name. Always return exactly one column name from the provided list. "
-            "If no suitable match, return 'NONE'."
-        ),
-    }
+Please provide a JSON object mapping *PDF field names* to the *most relevant Excel field name*.
+- The keys of the JSON object should be the PDF field names.
+- The values should be the corresponding Excel field names.
+- If you cannot find a reasonable match for a PDF field, DO NOT include it in the JSON output.
+- Ensure the output is ONLY the JSON object, nothing else.
 
-    user_message = {
-        "role": "user",
-        "content": (
-            f"PDF field: {pdf_field}\n"
-            f"Possible columns: {excel_columns}\n\n"
-            "Return the column name that best matches the PDF field. If you have no match, return 'NONE'."
-        ),
-    }
+Example Output Format:
+{{
+  "PDF Field Name 1": "Excel Field Name A",
+  "PDF Field Name 2": "Excel Field Name B"
+  # ... only include matched fields
+}}
 
-    # Call the ChatCompletion endpoint
-    response = openai.ChatCompletion.create(
-        model=model_name,
-        messages=[system_message, user_message],
-        temperature=0.0,  # Lower temperature for more deterministic output
-        max_tokens=50,
+JSON mapping:
+"""
+
+# --- Helper Functions ---
+
+def get_pdf_fields(pdf_bytes_io):
+    """Reads field names from a fillable PDF using pdfrw."""
+    fields = {}
+    try:
+        pdf = pdfrw.PdfReader(fdata=pdf_bytes_io.getvalue())
+        if pdf.Root and '/AcroForm' in pdf.Root and '/Fields' in pdf.Root.AcroForm:
+            for field in pdf.Root.AcroForm.Fields:
+                # Field names are usually under /T key, remove surrounding parentheses if present
+                field_name = field.get('/T')
+                if field_name:
+                    field_name = field_name.strip('()')
+                    # Store the raw field object along with the name for later filling
+                    fields[field_name] = field
+        return fields # Return dict {field_name: field_object}
+    except Exception as e:
+        st.error(f"Error reading PDF fields: {e}")
+        # Try to read annotations directly if AcroForm fails (less reliable)
+        try:
+            pdf = pdfrw.PdfReader(fdata=pdf_bytes_io.getvalue())
+            alt_fields = {}
+            for page in pdf.pages:
+                 if page.Annots:
+                     for annot in page.Annots:
+                         if annot.Subtype == '/Widget' and annot.T:
+                            field_name = annot.T.strip('()')
+                            alt_fields[field_name] = annot # Store annot object
+            if alt_fields:
+                 st.warning("Used alternative method to find fields. Results may vary.")
+                 return alt_fields
+            else:
+                 st.error("Could not find any form fields using standard or alternative methods.")
+                 return {} # Return empty if absolutely nothing found
+        except Exception as e_alt:
+            st.error(f"Further error during alternative PDF field reading: {e_alt}")
+            return {} # Return empty on secondary error
+
+def read_excel_data(excel_bytes_io):
+    """Reads data from the first two columns of an Excel file."""
+    try:
+        df = pd.read_excel(excel_bytes_io, header=None, usecols=[0, 1], engine='openpyxl')
+        # Convert empty/NaN keys to a placeholder or skip them
+        df = df.dropna(subset=[0]) # Drop rows where the field name (col 0) is empty
+        df[0] = df[0].astype(str) # Ensure field names are strings
+        df[1] = df[1].fillna('').astype(str) # Ensure values are strings, fill NaN with empty string
+        data_dict = dict(zip(df[0], df[1]))
+        return data_dict
+    except Exception as e:
+        st.error(f"Error reading Excel file: {e}")
+        return None
+
+def match_fields_with_ai(pdf_field_names, excel_field_names, api_key):
+    """Uses OpenAI API to match PDF fields to Excel fields."""
+    if not api_key:
+        st.error("OpenAI API Key is required.")
+        return None
+    if not pdf_field_names or not excel_field_names:
+        st.warning("Cannot perform matching without both PDF and Excel fields.")
+        return {} # Return empty mapping if no fields
+
+    client = OpenAI(api_key=api_key)
+    prompt = DEFAULT_PROMPT_TEMPLATE.format(
+        pdf_fields_list="\n".join([f"- {f}" for f in pdf_field_names]),
+        excel_fields_list="\n".join([f"- {f}" for f in excel_field_names])
     )
 
-    # The response content is presumably the single column name (or 'NONE').
-    answer = response["choices"][0]["message"]["content"].strip()
+    try:
+        st.info(f"Asking {MODEL_NAME} to match fields...")
+        completion = client.chat.completions.create(
+            model=MODEL_NAME,
+            messages=[
+                {"role": "system", "content": "You are an expert at matching form field names."},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0.1, # Lower temperature for more deterministic mapping
+            response_format={"type": "json_object"} # Request JSON output directly
+        )
+        response_content = completion.choices[0].message.content
+        st.write("AI Response (Raw JSON):")
+        st.code(response_content, language='json') # Show the raw response for debugging
 
-    # Validate the response:
-    # If the model returns a column name in the list, we'll use it.
-    # If it returns 'NONE' or something else, we default to "".
-    if answer in excel_columns:
-        return answer
-    else:
-        return ""
+        mapping = json.loads(response_content)
 
-# --------------------------------------------------------------------------
-# 3) PDF Form Field Extraction & Filling
-# --------------------------------------------------------------------------
-def extract_pdf_fields(pdf_reader):
-    """
-    Extract form field names from a fillable PDF using PyPDF2.
-    Returns a list of field names.
-    """
-    fields = set()
-    if "/AcroForm" in pdf_reader.trailer["/Root"]:
-        form = pdf_reader.trailer["/Root"]["/AcroForm"]
-        if "/Fields" in form:
-            for field in form["/Fields"]:
-                field_obj = field.get_object()
-                if "/T" in field_obj:
-                    fields.add(field_obj["/T"])
-    return list(fields)
+        # --- Validation Step ---
+        validated_mapping = {}
+        valid_pdf_keys = set(pdf_field_names)
+        valid_excel_values = set(excel_field_names)
+        for pdf_key, excel_val in mapping.items():
+            if pdf_key in valid_pdf_keys and excel_val in valid_excel_values:
+                 validated_mapping[pdf_key] = excel_val
+            else:
+                 st.warning(f"AI proposed an invalid mapping - PDF:'{pdf_key}' -> Excel:'{excel_val}'. Skipping.")
+        # ----------------------
 
-def fill_pdf_fields(pdf_reader, data_map):
-    """
-    Create a new PDF in memory with fields filled in according to data_map.
-    data_map should be {pdf_field_name: value_to_fill}.
-    Returns a PyPDF2.PdfWriter object.
-    """
-    pdf_writer = PyPDF2.PdfWriter()
-    pdf_writer.clone_document_from_reader(pdf_reader)
+        st.success(f"{MODEL_NAME} matching complete.")
+        return validated_mapping # Return the validated mapping
 
-    for page_num in range(len(pdf_writer.pages)):
-        page = pdf_writer.pages[page_num]
-        pdf_writer.update_page_form_field_values(page, data_map)
-    return pdf_writer
+    except json.JSONDecodeError as e:
+        st.error(f"Error parsing AI response as JSON: {e}")
+        st.error(f"Raw response was: {response_content}")
+        return None
+    except Exception as e:
+        st.error(f"Error calling OpenAI API: {e}")
+        return None
 
-# --------------------------------------------------------------------------
-# 4) The Main Streamlit App
-# --------------------------------------------------------------------------
-def main():
-    st.title("AI Fillable PDF Filler (OpenAI version)")
+def fill_pdf(pdf_bytes_io, field_mapping, excel_data, pdf_fields_objects):
+    """Fills the PDF form fields based on the mapping and data."""
+    try:
+        pdf = pdfrw.PdfReader(fdata=pdf_bytes_io.getvalue())
 
-    # Let user input (or hide) their OpenAI key
-    # (If you're not using environment vars or st.secrets)
-    user_openai_key = st.text_input("Enter your OpenAI API key (Optional)", type="password")
-    if user_openai_key:
-        openai.api_key = user_openai_key
+        # Ensure NeedAppearances is set for viewers to render fields correctly
+        if pdf.Root.AcroForm:
+             pdf.Root.AcroForm.update(pdfrw.PdfDict(NeedAppearances=pdfrw.PdfObject('true')))
 
-    # 1. Upload fillable PDF
-    pdf_file = st.file_uploader("Upload the fillable PDF", type=["pdf"])
+        filled_count = 0
+        for pdf_field_name, excel_field_name in field_mapping.items():
+            if pdf_field_name in pdf_fields_objects and excel_field_name in excel_data:
+                field_obj = pdf_fields_objects[pdf_field_name]
+                value_to_fill = excel_data[excel_field_name]
 
-    # 2. Upload Excel file
-    excel_file = st.file_uploader("Upload the Excel file", type=["xlsx", "xls"])
+                # Update the field value (/V) and potentially appearance (/AP)
+                # Using PdfString ensures correct PDF encoding
+                field_obj.update(pdfrw.PdfDict(V=pdfrw.PdfString(f'({value_to_fill})')))
+                # Optionally clear the appearance stream (/AP) so the viewer regenerates it
+                field_obj.update(pdfrw.PdfDict(AP=''))
+                filled_count += 1
+            else:
+                 st.warning(f"Skipping field '{pdf_field_name}': Mapped Excel field '{excel_field_name}' not found in data or PDF field object missing.")
 
-    if pdf_file and excel_file:
-        # Read the PDF
-        pdf_reader = PyPDF2.PdfReader(pdf_file)
-        pdf_fields = extract_pdf_fields(pdf_reader)
+        st.info(f"Attempted to fill {filled_count} fields based on mapping.")
 
-        # Read the Excel
-        df = pd.read_excel(excel_file)
-        st.write("Excel Preview:")
-        st.dataframe(df.head())
+        # Write the modified PDF to a BytesIO object
+        output_pdf_stream = io.BytesIO()
+        pdfrw.PdfWriter().write(output_pdf_stream, pdf)
+        output_pdf_stream.seek(0) # Rewind the stream to the beginning
+        return output_pdf_stream
 
-        # For simplicity, assume we only use the first row
-        excel_row = df.iloc[0].to_dict()
-        excel_columns = list(excel_row.keys())
+    except Exception as e:
+        st.error(f"Error filling PDF: {e}")
+        return None
 
-        st.write("**Step 1: OpenAI Field Matching**")
-        st.write("Below are the PDF fields and the AI's guess for the best Excel column. Adjust if needed.")
+# --- Streamlit UI ---
 
-        # Use OpenAI to propose a match for each PDF field
-        proposed_map = {}
-        user_map = {}
+st.set_page_config(layout="wide")
+st.title("📄➡️📊 AI PDF Form Filler")
+st.markdown("Upload a fillable PDF and an Excel file (.xlsx). The app uses AI to match Excel data (Col A: Field Name, Col B: Value) to PDF fields and fills the form.")
 
-        with st.spinner("Matching fields..."):
-            for pdf_field in pdf_fields:
-                matched_col = openai_match_field(pdf_field, excel_columns)
-                proposed_map[pdf_field] = matched_col
+# Use columns for better layout
+col1, col2 = st.columns(2)
 
-        # Let the user override each match
-        for pdf_field in pdf_fields:
-            col_options = [""] + excel_columns
-            default_index = col_options.index(proposed_map[pdf_field]) if proposed_map[pdf_field] in col_options else 0
-            selected_col = st.selectbox(
-                f"Match PDF field '{pdf_field}' to column:",
-                col_options,
-                index=default_index
-            )
-            user_map[pdf_field] = selected_col
+with col1:
+    st.subheader("1. Upload Files")
+    uploaded_pdf = st.file_uploader("Upload Fillable PDF", type="pdf")
+    uploaded_excel = st.file_uploader("Upload Excel Data (.xlsx)", type="xlsx")
 
-        if st.button("Fill PDF"):
-            # Build the final fill map for PDF form fields
-            final_data_map = {}
-            for pdf_field, col_name in user_map.items():
-                if col_name in excel_row:
-                    final_data_map[pdf_field] = str(excel_row[col_name])
-                else:
-                    final_data_map[pdf_field] = ""
+with col2:
+    st.subheader("2. Configure AI")
+    api_key = st.text_input("Enter OpenAI API Key", type="password", help="Your key is not stored. Required for field matching.")
+
+st.subheader("3. Process & Download")
+fill_button = st.button("✨ Fill PDF using AI Matcher")
+
+# --- Main Logic ---
+if fill_button:
+    if uploaded_pdf and uploaded_excel and api_key:
+        # Process in memory using BytesIO
+        pdf_bytes_io = io.BytesIO(uploaded_pdf.getvalue())
+        excel_bytes_io = io.BytesIO(uploaded_excel.getvalue())
+
+        pdf_fields_objects = {}
+        pdf_field_names = []
+        excel_data = {}
+
+        with st.spinner("Reading PDF fields..."):
+            pdf_fields_objects = get_pdf_fields(pdf_bytes_io) # Returns {name: object}
+            pdf_field_names = list(pdf_fields_objects.keys()) # Get just the names for matching
+            if pdf_field_names:
+                st.write("Detected PDF Fields:")
+                st.dataframe(pdf_field_names, use_container_width=True)
+            else:
+                st.error("No fillable fields detected in the PDF.")
+                st.stop() # Stop execution if no fields
+
+        with st.spinner("Reading Excel data..."):
+            excel_data = read_excel_data(excel_bytes_io) # Returns {name: value}
+            if excel_data:
+                st.write("Detected Excel Data (Field -> Value):")
+                # Convert dict to DataFrame for better display
+                excel_df_display = pd.DataFrame(list(excel_data.items()), columns=['Excel Field', 'Value'])
+                st.dataframe(excel_df_display, use_container_width=True)
+            else:
+                st.error("Could not read data from the Excel file.")
+                st.stop() # Stop execution if no data
+
+        # Perform AI Matching
+        field_mapping = None
+        with st.spinner(f"Matching fields with {MODEL_NAME}..."):
+            field_mapping = match_fields_with_ai(pdf_field_names, list(excel_data.keys()), api_key)
+
+        if field_mapping:
+            st.write("AI Field Mapping (PDF Field -> Excel Field):")
+            # Convert mapping dict to DataFrame for display
+            map_df_display = pd.DataFrame(list(field_mapping.items()), columns=['PDF Field', 'Matched Excel Field'])
+            st.dataframe(map_df_display, use_container_width=True)
 
             # Fill the PDF
-            filled_pdf_writer = fill_pdf_fields(pdf_reader, final_data_map)
+            with st.spinner("Filling PDF form..."):
+                # Rewind the PDF stream before filling
+                pdf_bytes_io.seek(0)
+                filled_pdf_stream = fill_pdf(pdf_bytes_io, field_mapping, excel_data, pdf_fields_objects)
 
-            # Output as a downloadable PDF
-            output_pdf_bytes = filled_pdf_writer.output(dest="S").read()
+            if filled_pdf_stream:
+                st.success("PDF Filled Successfully!")
+                # Provide download button
+                output_filename = f"filled_{uploaded_pdf.name}"
+                st.download_button(
+                    label="⬇️ Download Filled PDF",
+                    data=filled_pdf_stream,
+                    file_name=output_filename,
+                    mime="application/pdf"
+                )
+        elif field_mapping == {}: # Case where AI found zero matches
+             st.warning("The AI could not confidently match any PDF fields to the Excel data provided.")
+        else:
+            st.error("PDF filling could not proceed due to issues in the AI matching step.")
 
-            st.download_button(
-                label="Download Filled PDF",
-                data=output_pdf_bytes,
-                file_name="filled_form.pdf",
-                mime="application/pdf"
-            )
-
-if __name__ == "__main__":
-    main()
+    else:
+        # Error messages if files/key are missing
+        if not uploaded_pdf:
+            st.warning("Please upload a PDF file.")
+        if not uploaded_excel:
+            st.warning("Please upload an Excel file.")
+        if not api_key:
+            st.warning("Please enter your OpenAI API Key.")
