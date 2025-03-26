@@ -8,7 +8,7 @@ import os
 import tempfile # To handle uploaded files safely
 
 # --- Configuration ---
-MODEL_NAME = "gpt-4o-mini"
+MODEL_NAME = "pixtral-12b-latest"
 DEFAULT_PROMPT_TEMPLATE = """
 You are an AI assistant tasked with matching field names from an Excel sheet to field names in a fillable PDF form.
 The goal is to determine which Excel field likely corresponds to which PDF field, even if the names aren't exact matches (e.g., "Company Name" vs "Business Name").
