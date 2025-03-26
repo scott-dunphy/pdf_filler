@@ -1,5 +1,5 @@
 streamlit
+PyPDF2
 pandas
-fillpdf
-openai
 openpyxl
+thefuzz
