@@ -5,6 +5,7 @@ from openai import OpenAI
 import json
 import io
 import os
+from mistralai import Mistral
 import tempfile # To handle uploaded files safely
 
 # --- Configuration ---
