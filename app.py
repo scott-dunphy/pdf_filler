@@ -16,7 +16,7 @@ import os
 # --------------------------------------------------------------------------
 # 2) OpenAI LLM Matching
 # --------------------------------------------------------------------------
-def openai_match_field(pdf_field: str, excel_columns: list, model_name: str = "gpt-3.5-turbo") -> str:
+def openai_match_field(pdf_field: str, excel_columns: list, model_name: str = "gpt-4o-mini") -> str:
     """
     Uses OpenAI ChatCompletion to determine which Excel column best matches a given PDF field.
     pdf_field: The name of the PDF form field (e.g., "Company Name")
