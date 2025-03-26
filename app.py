@@ -180,7 +180,8 @@ def fill_pdf(pdf_bytes_io, field_mapping, excel_data, pdf_fields_objects):
                 from pdfrw.objects import pdfstring
                 field_obj.update(pdfrw.PdfDict(V=pdfstring.PdfString.encode(value_to_fill)))
                 # Optionally clear the appearance stream (/AP) so the viewer regenerates it
-                field_obj.update(pdfrw.PdfDict(AP=''))
+                if '/AP' in field_obj:
+                  del field_obj['/AP']
                 filled_count += 1
             else:
                  st.warning(f"Skipping field '{pdf_field_name}': Mapped Excel field '{excel_field_name}' not found in data or PDF field object missing.")
