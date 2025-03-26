@@ -12,6 +12,7 @@ MODEL_NAME = "pixtral-12b-latest"
 DEFAULT_PROMPT_TEMPLATE = """
 You are an AI assistant tasked with matching field names from an Excel sheet to field names in a fillable PDF form.
 The goal is to determine which Excel field likely corresponds to which PDF field, even if the names aren't exact matches (e.g., "Company Name" vs "Business Name").
+Be careful not to duplicate values like names if one is First Name and the other Spouse's First Name.
 
 Here are the available PDF field names:
 {pdf_fields_list}
