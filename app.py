@@ -98,7 +98,7 @@ def match_fields_with_ai(pdf_field_names, excel_field_names):
         return {} # Return empty mapping if no fields
 
     # Instantiate Mistral client
-    client = MistralClient(api_key=api_key)
+    client = Mistral(api_key=api_key)
 
     # Use the same prompt template
     prompt = DEFAULT_PROMPT_TEMPLATE.format(
