@@ -51,6 +51,7 @@ def get_pdf_fields(pdf_bytes_io):
                     field_name = field_name.strip('()')
                     # Store the raw field object along with the name for later filling
                     fields[field_name] = field
+                    st.write(field_name)
         return fields # Return dict {field_name: field_object}
     except Exception as e:
         st.error(f"Error reading PDF fields: {e}")
