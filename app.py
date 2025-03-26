@@ -89,7 +89,7 @@ def read_excel_data(excel_bytes_io):
 
 def match_fields_with_ai(pdf_field_names, excel_field_names):
     """Uses Mistral API to match PDF fields to Excel fields."""
-    api_key = os.environ["MISTRAL_API_KEY"]
+    api_key = st.secrets["MISTRAL_API_KEY"]
     if not api_key:
         st.error("Mistral API Key is required.") # Updated error message
         return None
