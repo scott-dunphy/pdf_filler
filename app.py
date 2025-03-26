@@ -108,15 +108,21 @@ def match_fields_with_ai(pdf_field_names, excel_field_names):
     )
 
     # Format messages for Mistral API
-    messages = [
-        ChatMessage(role="system", content="You are an expert at matching form field names."),
-        ChatMessage(role="user", content=prompt)
+ messages = [
+     {
+            "role": "system",
+            "content": "You are an expert at comparing text input field names.",
+        },
+        {
+            "role": "user",
+            "content": f"{prompt}",
+        },
     ]
 
     try:
         st.info(f"Asking {MODEL_NAME} to match fields...") # Updated info message
         # Call Mistral chat endpoint
-        completion = client.chat(
+        completion = client.chat.complete(
             model=MODEL_NAME,
             messages=messages,
             temperature=0.1, # Lower temperature for more deterministic mapping
