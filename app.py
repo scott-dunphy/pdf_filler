@@ -87,29 +87,37 @@ def read_excel_data(excel_bytes_io):
         st.error(f"Error reading Excel file: {e}")
         return None
 
-def match_fields_with_ai(pdf_field_names, excel_field_names, api_key):
-    """Uses OpenAI API to match PDF fields to Excel fields."""
+def match_fields_with_ai(pdf_field_names, excel_field_names):
+    """Uses Mistral API to match PDF fields to Excel fields."""
+    api_key = os.environ["MISTRAL_API_KEY"]
     if not api_key:
-        st.error("OpenAI API Key is required.")
+        st.error("Mistral API Key is required.") # Updated error message
         return None
     if not pdf_field_names or not excel_field_names:
         st.warning("Cannot perform matching without both PDF and Excel fields.")
         return {} # Return empty mapping if no fields
 
-    client = OpenAI(api_key=api_key)
+    # Instantiate Mistral client
+    client = MistralClient(api_key=api_key)
+
+    # Use the same prompt template
     prompt = DEFAULT_PROMPT_TEMPLATE.format(
         pdf_fields_list="\n".join([f"- {f}" for f in pdf_field_names]),
         excel_fields_list="\n".join([f"- {f}" for f in excel_field_names])
     )
 
+    # Format messages for Mistral API
+    messages = [
+        ChatMessage(role="system", content="You are an expert at matching form field names."),
+        ChatMessage(role="user", content=prompt)
+    ]
+
     try:
-        st.info(f"Asking {MODEL_NAME} to match fields...")
-        completion = client.chat.completions.create(
+        st.info(f"Asking {MODEL_NAME} to match fields...") # Updated info message
+        # Call Mistral chat endpoint
+        completion = client.chat(
             model=MODEL_NAME,
-            messages=[
-                {"role": "system", "content": "You are an expert at matching form field names."},
-                {"role": "user", "content": prompt}
-            ],
+            messages=messages,
             temperature=0.1, # Lower temperature for more deterministic mapping
             response_format={"type": "json_object"} # Request JSON output directly
         )
@@ -117,9 +125,10 @@ def match_fields_with_ai(pdf_field_names, excel_field_names, api_key):
         st.write("AI Response (Raw JSON):")
         st.code(response_content, language='json') # Show the raw response for debugging
 
+        # Attempt to parse the JSON response
         mapping = json.loads(response_content)
 
-        # --- Validation Step ---
+        # --- Validation Step (remains the same) ---
         validated_mapping = {}
         valid_pdf_keys = set(pdf_field_names)
         valid_excel_values = set(excel_field_names)
@@ -130,7 +139,7 @@ def match_fields_with_ai(pdf_field_names, excel_field_names, api_key):
                  st.warning(f"AI proposed an invalid mapping - PDF:'{pdf_key}' -> Excel:'{excel_val}'. Skipping.")
         # ----------------------
 
-        st.success(f"{MODEL_NAME} matching complete.")
+        st.success(f"{MODEL_NAME} matching complete.") # Updated success message
         return validated_mapping # Return the validated mapping
 
     except json.JSONDecodeError as e:
@@ -138,7 +147,8 @@ def match_fields_with_ai(pdf_field_names, excel_field_names, api_key):
         st.error(f"Raw response was: {response_content}")
         return None
     except Exception as e:
-        st.error(f"Error calling OpenAI API: {e}")
+        # Catch potential Mistral API specific errors if needed, otherwise generic Exception
+        st.error(f"Error calling Mistral API: {e}")
         return None
 
 def fill_pdf(pdf_bytes_io, field_mapping, excel_data, pdf_fields_objects):
