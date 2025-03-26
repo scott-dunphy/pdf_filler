@@ -100,14 +100,8 @@ def match_fields_with_ai(pdf_field_names, excel_field_names):
         excel_fields_list="\n".join([f"- {f}" for f in excel_field_names])
     )
     messages = [
-        {
-            "role": "system",
-            "content": "You are an expert at comparing text input field names.",
-        },
-        {
-            "role": "user",
-            "content": f"{prompt}",
-        },
+        {"role": "system", "content": "You are an expert at comparing text input field names."},
+        {"role": "user", "content": f"{prompt}"},
     ]
     try:
         st.info(f"Asking {MODEL_NAME} to match fields...")
@@ -151,37 +145,47 @@ def update_field(field_obj, encoded_value):
                 del kid['/AP']
 
 def fill_pdf(pdf_bytes_io, field_mapping, excel_data, pdf_fields_objects):
-    """Fills the PDF form fields based on the mapping and data, with extra debugging."""
+    """Fills the PDF form fields based on the mapping and data, with extra debugging and a second pass for widget annotations."""
     try:
         pdf = pdfrw.PdfReader(fdata=pdf_bytes_io.getvalue())
-        # Set NeedAppearances
+        # Set NeedAppearances so the viewer will rebuild appearances
         if pdf.Root.AcroForm:
             pdf.Root.AcroForm.update(pdfrw.PdfDict(NeedAppearances=pdfrw.PdfObject('true')))
 
         filled_count = 0
-        # Update fields using mapping
+        # First pass: update using our known field objects
         for pdf_field_name, excel_field_name in field_mapping.items():
             if pdf_field_name in pdf_fields_objects and excel_field_name in excel_data:
                 field_obj = pdf_fields_objects[pdf_field_name]
                 value_to_fill = excel_data[excel_field_name]
-                encoded_value = pdfrw.objects.pdfstring.PdfString.encode(value_to_fill)
+                # Debug the value coming from Excel
                 st.write(f"Updating field '{pdf_field_name}' with value '{value_to_fill}'")
+                encoded_value = pdfrw.objects.pdfstring.PdfString.encode(value_to_fill)
                 update_field(field_obj, encoded_value)
                 filled_count += 1
             else:
                 st.warning(f"Skipping field '{pdf_field_name}': Mapped Excel field '{excel_field_name}' not found or PDF field missing.")
-        
-        st.info(f"Attempted to fill {filled_count} fields based on mapping.")
-        
-        # Additional step: iterate through pages and remove /AP from any widget annotations
+
+        # Second pass: update any widget annotations in each page that match our mapping
         for page in pdf.pages:
             if page.Annots:
                 for annot in page.Annots:
-                    if annot.Subtype == '/Widget' and '/AP' in annot:
-                        del annot['/AP']
+                    if annot.Subtype == '/Widget' and annot.T:
+                        annot_field_name = annot.T.strip('()')
+                        if annot_field_name in field_mapping:
+                            excel_field_name = field_mapping[annot_field_name]
+                            if excel_field_name in excel_data:
+                                value_to_fill = excel_data[excel_field_name]
+                                st.write(f"(Widget pass) Updating field '{annot_field_name}' with value '{value_to_fill}'")
+                                encoded_value = pdfrw.objects.pdfstring.PdfString.encode(value_to_fill)
+                                annot.update(pdfrw.PdfDict(V=encoded_value, DV=encoded_value))
+                                if '/AP' in annot:
+                                    del annot['/AP']
+
+        st.info(f"Attempted to fill {filled_count} fields based on mapping.")
 
         # Debug: re-read the field values from pdf object before writing
-        st.write("Debug: Field values after updating:")
+        st.write("Debug: Field values after updating (AcroForm):")
         if pdf.Root.AcroForm and '/Fields' in pdf.Root.AcroForm:
             for field in pdf.Root.AcroForm.Fields:
                 field_name = field.get('/T')
