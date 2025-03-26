@@ -1,54 +1,73 @@
 import streamlit as st
 import pandas as pd
 import PyPDF2
+import openai
+import os
 
-# -----------------------------------------------------------------------------
-# 1. GPT-4o-mini Matching Logic (Stub)
-# -----------------------------------------------------------------------------
-def llm_match_fields(pdf_field, excel_columns):
+# --------------------------------------------------------------------------
+# 1) Configure your OpenAI API key
+# --------------------------------------------------------------------------
+# Option 1: You have OPENAI_API_KEY in your environment
+# openai.api_key = os.getenv("OPENAI_API_KEY")
+
+# Option 2: Use Streamlit secrets (uncomment if you're storing the key in streamlit secrets)
+# openai.api_key = st.secrets["openai_api_key"]
+
+# --------------------------------------------------------------------------
+# 2) OpenAI LLM Matching
+# --------------------------------------------------------------------------
+def openai_match_field(pdf_field: str, excel_columns: list, model_name: str = "gpt-3.5-turbo") -> str:
     """
-    Example function for GPT-4o-mini to match a single PDF field name to the best
-    Excel column. 
-    *This function is a placeholder—replace with your actual call to GPT-4o-mini.* 
-
-    pdf_field: str - A single PDF field name (e.g., 'Company Name')
-    excel_columns: List[str] - A list of Excel column names (e.g., ['Business Name', 'Address', 'Contact Person'])
-
-    Returns a single string: the name of the most likely matching column, or "" if no confident match was found.
-    """
-
-    # PSEUDO-CODE:
-
-    # 1. Build a prompt for your GPT-4o-mini model.
-    prompt = f"""
-    You are a specialized model for matching PDF form fields to Excel column names.
-    The PDF field is: "{pdf_field}"
-    Possible Excel columns: {excel_columns}
-
-    Return the single column name that best corresponds to the PDF field.
-    If you have no good match, return an empty string.
+    Uses OpenAI ChatCompletion to determine which Excel column best matches a given PDF field.
+    pdf_field: The name of the PDF form field (e.g., "Company Name")
+    excel_columns: List of column names in the Excel (e.g., ["Business Name", "Address", "Contact Person"])
+    model_name: The OpenAI model to use (defaults to GPT-3.5-turbo)
+    Returns the single best matching column name, or "" if none is confidently matched.
     """
 
-    # 2. Send it to your GPT-4o-mini. For example, if you have a local inference function:
-    #    (Replace `my_local_gpt_model_inference` with your actual function or API call.)
-    # response = my_local_gpt_model_inference(prompt)
+    # Build a concise conversation to guide the model.
+    # We provide a system message describing its role and constraints.
+    # Then a user message that includes the PDF field and the possible Excel columns.
+    system_message = {
+        "role": "system",
+        "content": (
+            "You are a helpful assistant specialized in matching a PDF form field name "
+            "to the best Excel column name. Always return exactly one column name from the provided list. "
+            "If no suitable match, return 'NONE'."
+        ),
+    }
 
-    # 3. Parse the response to extract the single column name.
-    #    This might involve some regex or direct text parsing, depending on how GPT-4o-mini responds.
-    # For demonstration, we return a placeholder answer:
-    # (In practice, you'd interpret the LLM’s actual text. E.g., the response might be: "Business Name".)
-    response = "Business Name"  # <--- Replace with parsed response from GPT-4o-mini.
+    user_message = {
+        "role": "user",
+        "content": (
+            f"PDF field: {pdf_field}\n"
+            f"Possible columns: {excel_columns}\n\n"
+            "Return the column name that best matches the PDF field. If you have no match, return 'NONE'."
+        ),
+    }
 
-    # 4. Validate the response
-    if response in excel_columns:
-        return response
+    # Call the ChatCompletion endpoint
+    response = openai.ChatCompletion.create(
+        model=model_name,
+        messages=[system_message, user_message],
+        temperature=0.0,  # Lower temperature for more deterministic output
+        max_tokens=50,
+    )
+
+    # The response content is presumably the single column name (or 'NONE').
+    answer = response["choices"][0]["message"]["content"].strip()
+
+    # Validate the response:
+    # If the model returns a column name in the list, we'll use it.
+    # If it returns 'NONE' or something else, we default to "".
+    if answer in excel_columns:
+        return answer
     else:
-        # If the response isn't recognized, return empty or None
         return ""
 
-# -----------------------------------------------------------------------------
-# 2. PDF Form Extraction and Filling
-# -----------------------------------------------------------------------------
+# --------------------------------------------------------------------------
+# 3) PDF Form Field Extraction & Filling
+# --------------------------------------------------------------------------
 def extract_pdf_fields(pdf_reader):
     """
     Extract form field names from a fillable PDF using PyPDF2.
@@ -78,11 +97,17 @@ def fill_pdf_fields(pdf_reader, data_map):
         pdf_writer.update_page_form_field_values(page, data_map)
     return pdf_writer
 
-# -----------------------------------------------------------------------------
-# 3. The Main Streamlit App
-# -----------------------------------------------------------------------------
+# --------------------------------------------------------------------------
+# 4) The Main Streamlit App
+# --------------------------------------------------------------------------
 def main():
-    st.title("AI Fillable PDF Filler (GPT-4o-mini version)")
+    st.title("AI Fillable PDF Filler (OpenAI version)")
+
+    # Let user input (or hide) their OpenAI key
+    # (If you're not using environment vars or st.secrets)
+    user_openai_key = st.text_input("Enter your OpenAI API key (Optional)", type="password")
+    if user_openai_key:
+        openai.api_key = user_openai_key
 
     # 1. Upload fillable PDF
     pdf_file = st.file_uploader("Upload the fillable PDF", type=["pdf"])
@@ -100,22 +125,23 @@ def main():
         st.write("Excel Preview:")
         st.dataframe(df.head())
 
-        # For simplicity, assume we only use the first row of the Excel
+        # For simplicity, assume we only use the first row
         excel_row = df.iloc[0].to_dict()
         excel_columns = list(excel_row.keys())
 
-        st.write("**Step 1: GPT-4o-mini Field Matching**")
-        st.write("Below are the PDF fields and GPT-4o-mini's guesses for the best Excel column. Adjust as needed.")
+        st.write("**Step 1: OpenAI Field Matching**")
+        st.write("Below are the PDF fields and the AI's guess for the best Excel column. Adjust if needed.")
 
+        # Use OpenAI to propose a match for each PDF field
         proposed_map = {}
         user_map = {}
 
-        # Use GPT-4o-mini to propose a match for each PDF field
-        for pdf_field in pdf_fields:
-            matched_col = llm_match_fields(pdf_field, excel_columns)
-            proposed_map[pdf_field] = matched_col
+        with st.spinner("Matching fields..."):
+            for pdf_field in pdf_fields:
+                matched_col = openai_match_field(pdf_field, excel_columns)
+                proposed_map[pdf_field] = matched_col
 
-        # Let the user verify / adjust each match
+        # Let the user override each match
         for pdf_field in pdf_fields:
             col_options = [""] + excel_columns
             default_index = col_options.index(proposed_map[pdf_field]) if proposed_map[pdf_field] in col_options else 0
