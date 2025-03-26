@@ -201,16 +201,12 @@ with col1:
     uploaded_pdf = st.file_uploader("Upload Fillable PDF", type="pdf")
     uploaded_excel = st.file_uploader("Upload Excel Data (.xlsx)", type="xlsx")
 
-with col2:
-    st.subheader("2. Configure AI")
-    api_key = st.text_input("Enter OpenAI API Key", type="password", help="Your key is not stored. Required for field matching.")
-
 st.subheader("3. Process & Download")
 fill_button = st.button("✨ Fill PDF using AI Matcher")
 
 # --- Main Logic ---
 if fill_button:
-    if uploaded_pdf and uploaded_excel and api_key:
+    if uploaded_pdf and uploaded_excel:
         # Process in memory using BytesIO
         pdf_bytes_io = io.BytesIO(uploaded_pdf.getvalue())
         excel_bytes_io = io.BytesIO(uploaded_excel.getvalue())
@@ -243,7 +239,7 @@ if fill_button:
         # Perform AI Matching
         field_mapping = None
         with st.spinner(f"Matching fields with {MODEL_NAME}..."):
-            field_mapping = match_fields_with_ai(pdf_field_names, list(excel_data.keys()), api_key)
+            field_mapping = match_fields_with_ai(pdf_field_names, list(excel_data.keys()))
 
         if field_mapping:
             st.write("AI Field Mapping (PDF Field -> Excel Field):")
