@@ -204,7 +204,80 @@ def fill_pdf(pdf_bytes_io, field_mapping, excel_data, pdf_fields_objects):
         st.error(f"Error filling PDF: {e}")
         return None
 
-# --- Streamlit Main Code ---
+# --- Streamlit UI ---
 
-if __name__ == "__main__":
-    pass  # The main code is in the code block above.
+st.set_page_config(layout="wide")
+st.title("📄➡️📊 AI PDF Form Filler")
+st.markdown("Upload a fillable PDF and an Excel file (.xlsx). The app uses AI to match Excel data (Col A: Field Name, Col B: Value) to PDF fields and fills the form.")
+
+col1, col2 = st.columns(2)
+with col1:
+    st.subheader("1. Upload Files")
+    uploaded_pdf = st.file_uploader("Upload Fillable PDF", type="pdf")
+    uploaded_excel = st.file_uploader("Upload Excel Data (.xlsx)", type="xlsx")
+
+st.subheader("3. Process & Download")
+fill_button = st.button("✨ Fill PDF using AI Matcher")
+
+if fill_button:
+    if uploaded_pdf and uploaded_excel:
+        pdf_bytes_io = io.BytesIO(uploaded_pdf.getvalue())
+        excel_bytes_io = io.BytesIO(uploaded_excel.getvalue())
+
+        pdf_fields_objects = {}
+        pdf_field_names = []
+        excel_data = {}
+
+        with st.spinner("Reading PDF fields..."):
+            pdf_fields_objects = get_pdf_fields(pdf_bytes_io)
+            pdf_field_names = list(pdf_fields_objects.keys())
+            if pdf_field_names:
+                st.write("Detected PDF Fields:")
+                st.dataframe(pdf_field_names, use_container_width=True)
+            else:
+                st.error("No fillable fields detected in the PDF.")
+                st.stop()
+
+        with st.spinner("Reading Excel data..."):
+            excel_data = read_excel_data(excel_bytes_io)
+            if excel_data:
+                st.write("Detected Excel Data (Field -> Value):")
+                excel_df_display = pd.DataFrame(list(excel_data.items()), columns=['Excel Field', 'Value'])
+                st.dataframe(excel_df_display, use_container_width=True)
+            else:
+                st.error("Could not read data from the Excel file.")
+                st.stop()
+
+        field_mapping = None
+        with st.spinner(f"Matching fields with {MODEL_NAME}..."):
+            field_mapping = match_fields_with_ai(pdf_field_names, list(excel_data.keys()))
+        
+        if field_mapping:
+            st.write("AI Field Mapping (PDF Field -> Excel Field):")
+            map_df_display = pd.DataFrame(list(field_mapping.items()), columns=['PDF Field', 'Matched Excel Field'])
+            st.dataframe(map_df_display, use_container_width=True)
+
+            with st.spinner("Filling PDF form..."):
+                pdf_bytes_io.seek(0)
+                filled_pdf_stream = fill_pdf(pdf_bytes_io, field_mapping, excel_data, pdf_fields_objects)
+            
+            if filled_pdf_stream:
+                st.success("PDF Filled Successfully!")
+                output_filename = f"filled_{uploaded_pdf.name}"
+                st.download_button(
+                    label="⬇️ Download Filled PDF",
+                    data=filled_pdf_stream,
+                    file_name=output_filename,
+                    mime="application/pdf"
+                )
+            else:
+                st.error("Failed to generate filled PDF.")
+        elif field_mapping == {}:
+            st.warning("The AI could not confidently match any PDF fields to the Excel data provided.")
+        else:
+            st.error("PDF filling could not proceed due to issues in the AI matching step.")
+    else:
+        if not uploaded_pdf:
+            st.warning("Please upload a PDF file.")
+        if not uploaded_excel:
+            st.warning("Please upload an Excel file.")
